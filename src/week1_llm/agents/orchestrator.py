@@ -34,6 +34,46 @@ class AgentOrchestrator:
             event["attempt"] = attempt
         return event
 
+    @staticmethod
+    def _source_links(tool_observations: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+        """Extract bounded source metadata so reviewed answers can preserve citations."""
+        sources: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        def visit(value: Any) -> None:
+            if isinstance(value, dict):
+                url = value.get("url")
+                title = value.get("title")
+                if isinstance(url, str) and url.startswith(("https://", "http://")):
+                    if url not in seen:
+                        seen.add(url)
+                        sources.append({
+                            "title": str(title or url)[:200],
+                            "url": url[:500],
+                        })
+                for item in value.values():
+                    visit(item)
+            elif isinstance(value, list):
+                for item in value:
+                    visit(item)
+
+        visit(tool_observations or [])
+        return sources[:5]
+
+    @classmethod
+    def _attach_source_links(
+        cls,
+        research: str,
+        tool_observations: list[dict[str, Any]] | None,
+    ) -> str:
+        sources = cls._source_links(tool_observations)
+        if not sources:
+            return research
+
+        lines = ["", "", "Source links from the approved web-search tool observations:"]
+        lines.extend(f"- {item['title']}: {item['url']}" for item in sources)
+        return research + "\n".join(lines)
+
     def run(
         self,
         request: str,
@@ -74,6 +114,7 @@ class AgentOrchestrator:
                 tool_observations=tool_observations,
                 adaptive_instruction=adaptive_instruction,
             )
+            research = self._attach_source_links(research, tool_observations)
             trace.append(self._event(
                 "Researcher", "complete",
                 "Prepared focused findings from the available conversation and retrieved context.",
