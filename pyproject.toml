@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-foundation-week1-week2"
+version = "0.8.0"
+description = "EduTwin Africa curriculum-aware tutor with state-aware Auto routing, ReAct tools, and bounded multi-agent collaboration."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "torch",
+    "fastapi",
+    "uvicorn[standard]",
+    "requests",
+    "python-dotenv",
+    "scikit-learn",
+    "matplotlib",
+    "tiktoken",
+    "pypdf",
+    "streamlit",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

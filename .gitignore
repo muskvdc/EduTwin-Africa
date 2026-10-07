@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.env
+.DS_Store
+.vscode/
+*.pt
+*.pth
+*.npz
+data/generated/
+
+# Keep curriculum knowledge in the repository.
+data/knowledge/*
+!data/knowledge/
+!data/knowledge/*.txt
+!data/knowledge/.gitkeep
+
+data/security/*.jsonl
+data/memory.json

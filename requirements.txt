@@ -1,0 +1,13 @@
+numpy
+torch
+fastapi
+uvicorn[standard]
+requests
+python-dotenv
+scikit-learn
+matplotlib
+pytest
+tiktoken
+pypdf
+streamlit
+-e .

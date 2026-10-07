@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>EduTwin Africa — Auto Agent Runtime</title>
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#64748b; --line:#dbe2ea; --panel:#f5f7fa; --blue:#2459d3; --green:#16834a; --amber:#a15c00; }
+    * { box-sizing:border-box; }
+    body { font-family:system-ui,sans-serif; max-width:900px; margin:36px auto; padding:0 18px; color:var(--ink); }
+    .sub { color:var(--muted); line-height:1.5; }
+    .mode-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:20px 0 10px; }
+    .mode-switch { display:inline-flex; border:1px solid var(--line); padding:4px; border-radius:12px; background:var(--panel); gap:4px; }
+    .mode-button { border:0; border-radius:8px; background:transparent; padding:10px 14px; color:var(--ink); font-weight:600; }
+    .mode-button[aria-pressed="true"] { background:white; color:var(--blue); box-shadow:0 1px 4px #0f172a1a; }
+    #mode-description { color:var(--muted); font-size:.9rem; min-height:1.4em; }
+    #chat { min-height:340px; max-height:62vh; overflow-y:auto; border:1px solid var(--line); border-radius:14px; padding:16px; background:white; }
+    .msg { margin:12px 0; white-space:pre-wrap; line-height:1.55; overflow-wrap:anywhere; }
+    .user { font-weight:650; }
+    .assistant { background:var(--panel); padding:14px; border-radius:10px; }
+    .pending { color:var(--muted); font-style:italic; }
+    form { display:flex; gap:10px; margin-top:14px; }
+    input { flex:1; min-width:0; padding:13px; border:1px solid var(--line); border-radius:10px; font:inherit; }
+    #send { padding:12px 18px; cursor:pointer; border:0; border-radius:10px; background:var(--blue); color:white; font-weight:650; }
+    #send:disabled { opacity:.55; cursor:wait; }
+    .trace { border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:10px 0; background:#fbfcfe; }
+    .trace-title { font-weight:700; margin-bottom:8px; }
+    .trace-item { display:grid; grid-template-columns:105px 1fr; gap:8px; padding:7px 0; border-top:1px solid #edf0f4; font-size:.9rem; }
+    .trace-agent { font-weight:650; }
+    .trace-status { color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.03em; }
+    .approved { color:var(--green); } .revision_requested,.review_limit_reached { color:var(--amber); }
+    .thought { color:#6d4aff; } .action { color:#2459d3; } .observation { color:#0f766e; } .answer,.summary { color:var(--green); }
+    .trace-summary { color:#475569; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .trace-meta { color:var(--muted); font-size:.8rem; margin-top:8px; }
+    @media(max-width:560px) { body{margin:20px auto} form{flex-direction:column} #send{width:100%} .trace-item{grid-template-columns:1fr;gap:3px} }
+  </style>
+</head>
+<body>
+  <h1>EduTwin Africa</h1>
+  <p class="sub">Week 1 learning foundation with Week 2 text processing, context management and RAG. EduTwin automatically chooses the safest and most useful workflow for each message.</p>
+
+  <div class="mode-row">
+    <strong>EduTwin mode</strong>
+    <span id="mode-description">Auto — EduTwin chooses the simplest safe workflow for each request.</span>
+  </div>
+
+  <div id="chat" aria-live="polite" aria-label="Conversation"></div>
+
+  <form id="form">
+    <input id="message" autocomplete="off" placeholder="Message the assistant..." aria-label="Message">
+    <button id="send" type="submit">Send</button>
+  </form>
+
+  <script>
+    const chat = document.getElementById("chat");
+    const form = document.getElementById("form");
+    const input = document.getElementById("message");
+    const sendButton = document.getElementById("send");
+    function addMessage(role, text) {
+      const div = document.createElement("div");
+      div.className = "msg " + role;
+      div.textContent = (role === "user" ? "You: " : "AI: ") + text;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+      return div;
+    }
+
+    function addActivity(data) {
+      if (!Array.isArray(data.activity) || data.activity.length === 0) return;
+      const div = document.createElement("div");
+      div.className = "trace-meta";
+      div.textContent = data.activity.join(" → ");
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    function addTrace(data) {
+      if (!Array.isArray(data.trace) || data.trace.length === 0) return;
+      const panel = document.createElement("section");
+      panel.className = "trace";
+      const title = document.createElement("div");
+      title.className = "trace-title";
+      title.textContent = "Multi-Agent + Tool Use activity";
+      panel.appendChild(title);
+
+      for (const event of data.trace) {
+        const row = document.createElement("div");
+        row.className = "trace-item";
+        const agent = document.createElement("div");
+        agent.className = "trace-agent";
+        agent.textContent = event.agent || "Agent";
+        const details = document.createElement("div");
+        const status = document.createElement("div");
+        status.className = "trace-status " + (event.status || "");
+        status.textContent = (event.status || "complete").replaceAll("_", " ");
+        const summary = document.createElement("div");
+        summary.className = "trace-summary";
+        summary.textContent = event.summary || "";
+        details.append(status, summary);
+        if (event.attempt) {
+          const attempt = document.createElement("div");
+          attempt.className = "trace-meta";
+          attempt.textContent = "Review attempt " + event.attempt;
+          details.appendChild(attempt);
+        }
+        row.append(agent, details);
+        panel.appendChild(row);
+      }
+      const meta = document.createElement("div");
+      meta.className = "trace-meta";
+      meta.textContent = "Review result: " + (data.review_status || "not reported")
+        + " · Attempts: " + (data.iterations ?? "—");
+      panel.appendChild(meta);
+      chat.appendChild(panel);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = input.value.trim();
+      if (!message || sendButton.disabled) return;
+
+      addMessage("user", message);
+      input.value = "";
+      sendButton.disabled = true;
+      const pending = addMessage("pending", "EduTwin is working…");
+
+      try {
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({message, temperature:0.7, mode:"auto"})
+        });
+        const data = await response.json();
+        pending.remove();
+        if (!response.ok || data.error) {
+          addMessage("assistant", "Error: " + (data.error || "Request failed."));
+          return;
+        }
+        addActivity(data);
+        if (data.mode === "multi_agent") addTrace(data);
+        addMessage("assistant", data.answer || "The assistant returned an empty response.");
+      } catch (error) {
+        pending.remove();
+        addMessage("assistant", "Connection error. Check that the local app is running.");
+      } finally {
+        sendButton.disabled = false;
+        input.focus();
+      }
+    });
+  </script>
+</body>
+</html>

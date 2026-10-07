@@ -1,0 +1,64 @@
+GRADE 8 MATHEMATICS
+SUBJECT: MATHEMATICS
+TOPIC: ALGEBRA
+
+Topic: Solving Equations with Brackets
+
+When solving equations containing brackets, use the distributive property.
+
+The distributive property states:
+
+a(b + c) = ab + ac
+
+This means that the term outside the brackets must be multiplied by every term inside the brackets.
+
+Example:
+
+3(x + 4) = 2x + 15
+
+Step 1: Expand the brackets.
+
+3x + 12 = 2x + 15
+
+Step 2: Collect the variable terms on one side.
+
+3x - 2x + 12 = 15
+
+x + 12 = 15
+
+Step 3: Move the constant.
+
+x = 3
+
+Step 4: Check the answer by substituting x = 3 into the original equation.
+
+3(3 + 4) = 2(3) + 15
+21 = 21
+
+Therefore, x = 3.
+
+Important rule:
+
+If a negative number is outside the brackets, it must be distributed to every term inside the brackets.
+
+Example:
+
+5 - 2(3x - 4) = x + 7
+
+Distribute -2:
+
+5 - 6x + 8 = x + 7
+
+Combine like terms:
+
+13 - 6x = x + 7
+
+Continue solving until the variable is isolated.
+
+Teaching guidance:
+
+Explain algebraic procedures step by step.
+Use simple language appropriate for a Grade 8 learner.
+Show the reasoning behind each operation.
+Encourage the learner to check their answer.
+Do not simply provide the final answer when the learner is asking for help understanding the method.
