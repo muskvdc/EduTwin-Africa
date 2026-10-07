@@ -198,3 +198,57 @@ def test_router_preserves_pending_check_for_tutoring_control_request():
     )
     assert decision.reason == "active_adaptive_control"
     assert decision.activity == ()
+
+
+def test_config_reads_streamlit_secret_when_environment_is_missing(monkeypatch):
+    import week1_llm.config as config_module
+
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setattr(
+        config_module,
+        "_streamlit_secret",
+        lambda name: "streamlit-test-key" if name == "TAVILY_API_KEY" else None,
+    )
+
+    assert config_module._secret_value("TAVILY_API_KEY") == "streamlit-test-key"
+
+
+def test_config_prefers_environment_secret_over_streamlit_secret(monkeypatch):
+    import week1_llm.config as config_module
+
+    monkeypatch.setenv("TAVILY_API_KEY", "environment-test-key")
+    monkeypatch.setattr(
+        config_module,
+        "_streamlit_secret",
+        lambda name: "streamlit-test-key",
+    )
+
+    assert config_module._secret_value("TAVILY_API_KEY") == "environment-test-key"
+
+
+def test_config_returns_none_when_secret_is_unavailable(monkeypatch):
+    import week1_llm.config as config_module
+
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setattr(config_module, "_streamlit_secret", lambda name: None)
+
+    assert config_module._secret_value("TAVILY_API_KEY") is None
+
+
+def test_web_search_fails_closed_without_provider_key(monkeypatch):
+    monkeypatch.setattr(
+        builtins,
+        "config",
+        SimpleNamespace(
+            tavily_api_key=None,
+            web_search_timeout_seconds=10,
+            web_search_max_results=5,
+        ),
+    )
+
+    try:
+        builtins.web_search({"query": "cell regeneration", "max_results": 1})
+    except ValueError as exc:
+        assert "web search is not configured" in str(exc).lower()
+    else:
+        raise AssertionError("web_search should fail closed when no provider key exists")

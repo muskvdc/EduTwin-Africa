@@ -2,10 +2,38 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Any
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+def _streamlit_secret(name: str) -> Any:
+    """Return one Streamlit secret without making Streamlit a hard dependency."""
+    try:
+        import streamlit as st
+
+        secrets = st.secrets
+        if hasattr(secrets, "get"):
+            return secrets.get(name)
+        return None
+    except Exception:
+        # Streamlit secrets are optional outside the Streamlit runtime.
+        return None
+
+
+def _secret_value(name: str) -> str | None:
+    """Read a secret from the environment, then Streamlit Cloud secrets."""
+    value = os.getenv(name)
+    if value is not None and value.strip():
+        return value.strip()
+
+    streamlit_value = _streamlit_secret(name)
+    if isinstance(streamlit_value, str) and streamlit_value.strip():
+        return streamlit_value.strip()
+
+    return None
+
 
 
 def _int_env(name: str, default: int) -> int:
@@ -18,7 +46,7 @@ def _int_env(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class Config:
-    groq_api_key: str | None = os.getenv("GROQ_API_KEY")
+    groq_api_key: str | None = _secret_value("GROQ_API_KEY")
     groq_base_url: str = os.getenv(
         "GROQ_BASE_URL",
         "https://api.groq.com/openai/v1/chat/completions",
@@ -38,7 +66,7 @@ class Config:
     security_max_model_calls: int = _int_env("SECURITY_MAX_MODEL_CALLS", 10)
     security_max_tool_calls: int = _int_env("SECURITY_MAX_TOOL_CALLS", 4)
     security_max_estimated_tokens: int = _int_env("SECURITY_MAX_ESTIMATED_TOKENS", 30000)
-    tavily_api_key: str | None = os.getenv("TAVILY_API_KEY")
+    tavily_api_key: str | None = _secret_value("TAVILY_API_KEY")
     web_search_timeout_seconds: int = _int_env("WEB_SEARCH_TIMEOUT_SECONDS", 10)
     web_search_max_results: int = _int_env("WEB_SEARCH_MAX_RESULTS", 5)
 

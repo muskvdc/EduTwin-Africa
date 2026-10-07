@@ -85,7 +85,7 @@ def web_search(args: dict[str, Any]) -> dict[str, Any]:
     """Search the live web through Tavily and return bounded, untrusted results."""
     if not config.tavily_api_key:
         raise ValueError(
-            "Web search is not configured. Add TAVILY_API_KEY to the project's .env file."
+            "Web search is not configured. Add TAVILY_API_KEY to the application secrets."
         )
 
     query = str(args.get("query", "")).strip()

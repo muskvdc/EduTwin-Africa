@@ -39,7 +39,7 @@ st.set_page_config(
 PROJECT_ROOT = Path(__file__).resolve().parent
 KNOWLEDGE_DIR = PROJECT_ROOT / "data" / "knowledge"
 
-EDUTWIN_SYSTEM_INSTRUCTION = """
+EDUTWIN_SYSTEM_INSTRUCTION = r"""
 You are EduTwin Africa, an educational tutor.
 
 Teach the learner rather than simply giving answers. Explain concepts
