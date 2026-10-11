@@ -10,4 +10,5 @@ pytest
 tiktoken
 pypdf
 streamlit
+supabase
 -e .

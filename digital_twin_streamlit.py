@@ -18,8 +18,157 @@ from week1_llm.security import SecurityManager
 from week1_llm.security.budget import BudgetExceeded
 from week1_llm.security.exceptions import SecurityBlocked
 from week1_llm.tutoring.adaptive import LearningState, build_adaptive_instruction
+from supabase import create_client
+from auth import (
+    create_learner_profile,
+    get_current_user,
+    get_learner_profile,
+    sign_in,
+    sign_out,
+    sign_up,
+    update_learner_profile,
+)
 
 
+supabase = create_client(
+    st.secrets["SUPABASE_URL"],
+    st.secrets["SUPABASE_KEY"],
+)
+
+# ============================================================
+# AUTHENTICATION
+# ============================================================
+
+current_user = get_current_user()
+
+if current_user is None:
+    st.title("🎓 EduTwin Africa")
+    st.subheader("Your AI-powered learning companion")
+
+    login_tab, signup_tab = st.tabs(
+        ["🔐 Log In", "📝 Create Account"]
+    )
+
+    with login_tab:
+        st.write("Log in to continue your learning journey.")
+
+        login_email = st.text_input(
+            "Email",
+            key="login_email",
+        )
+
+        login_password = st.text_input(
+            "Password",
+            type="password",
+            key="login_password",
+        )
+
+        if st.button(
+            "Log In",
+            type="primary",
+            use_container_width=True,
+        ):
+            if not login_email or not login_password:
+                st.error("Please enter your email and password.")
+            else:
+                try:
+                    result = sign_in(
+                        login_email,
+                        login_password,
+                    )
+
+                    if result.user is not None:
+                        st.success("Login successful!")
+                        st.rerun()
+                    else:
+                        st.error(
+                            "Login failed. Please check your details."
+                        )
+
+                except Exception as exc:
+                    st.error(f"Login failed: {exc}")
+
+    with signup_tab:
+        st.write(
+            "Create an account to save your learning progress."
+        )
+
+        signup_name = st.text_input(
+            "Your name",
+            key="signup_name",
+        )
+
+        signup_email = st.text_input(
+            "Email",
+            key="signup_email",
+        )
+
+        signup_password = st.text_input(
+            "Password",
+            type="password",
+            key="signup_password",
+        )
+
+        if st.button(
+            "Create Account",
+            type="primary",
+            use_container_width=True,
+        ):
+            if not signup_name or not signup_email or not signup_password:
+                st.error("Please complete all fields.")
+            else:
+                try:
+                    result = sign_up(
+                        signup_email,
+                        signup_password,
+                    )
+
+                    if result.user is not None:
+                        st.success(
+                            "Account created successfully. "
+                            "Please check your email to confirm "
+                            "your account, then log in."
+                        )
+                    else:
+                        st.error(
+                            "Account creation failed. Please try again."
+                        )
+
+                except Exception as exc:
+                    st.error(
+                        f"Account creation failed: {exc}"
+                    )
+
+    st.stop()
+
+# Load the learner profile for the authenticated user
+if current_user is not None:
+    learner_profile = get_learner_profile(current_user.id)
+
+if learner_profile is None:
+    st.warning("Please complete your learner profile.")
+    profile_name = st.text_input(
+        "Your name",
+        key="profile_name",
+    )
+
+    if st.button(
+        "Save Profile",
+        type="primary",
+    ):
+        if not profile_name.strip():
+            st.error("Please enter your name.")
+        else:
+            create_learner_profile(
+                current_user.id,
+                profile_name.strip(),
+            )
+            st.success("Profile saved!")
+            st.rerun()
+
+else:
+    st.session_state.user_name = learner_profile["name"]
+    st.session_state.language = learner_profile["preferred_language"]
 # ============================================================
 # PAGE CONFIG
 # ============================================================
@@ -30,7 +179,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
 
 # ============================================================
 # PROJECT SETUP
@@ -1430,10 +1578,26 @@ with st.sidebar:
     st.caption("AI-powered educational tutor")
 
     st.subheader("👤 Learner Profile")
-    st.session_state.user_name = st.text_input(
+
+    def save_learner_name():
+        new_name = st.session_state.learner_name_input.strip()
+
+        if new_name and new_name != st.session_state.user_name:
+            try:
+                update_learner_profile(
+                    current_user.id,
+                    {"name": new_name},
+                )
+                st.session_state.user_name = new_name
+            except Exception as exc:
+                st.error(f"Could not save your name: {exc}")
+
+    st.text_input(
         "Your Name",
+        key="learner_name_input",
         value=st.session_state.user_name,
-        help="Used to personalize this learner session.",
+        help="Your name is saved automatically when you finish editing.",
+        on_change=save_learner_name,
     )
 
     st.divider()
@@ -1524,7 +1688,6 @@ with st.sidebar:
             if st.button("Cancel", use_container_width=True):
                 st.session_state.confirm_clear = False
                 st.rerun()
-
 
 # ============================================================
 # MAIN HEADER
@@ -1787,13 +1950,25 @@ with progress_tab:
 with settings_tab:
     st.subheader("⚙️ EduTwin Settings")
 
-    st.session_state.language = st.selectbox(
+    def save_language_preference():
+        new_language = st.session_state.language_selector
+
+        if new_language != st.session_state.language:
+            try:
+                update_learner_profile(
+                    current_user.id,
+                    {"preferred_language": new_language},
+                )
+                st.session_state.language = new_language
+            except Exception as exc:
+                st.error(f"Could not save your language preference: {exc}")
+
+    st.selectbox(
         "Response Language",
         ["English", "isiXhosa", "isiZulu", "Swahili"],
-        index=["English", "isiXhosa", "isiZulu", "Swahili"].index(
-            st.session_state.language
-        ),
-        help="EduTwin will be instructed to answer in the selected language.",
+        key="language_selector",
+        help="EduTwin will save your language preference automatically.",
+        on_change=save_language_preference,
     )
 
     st.session_state.temperature = st.slider(
@@ -1856,7 +2031,6 @@ with settings_tab:
     if st.button("🗑️ Start a new session", use_container_width=True):
         st.session_state.confirm_clear = True
         st.rerun()
-
 
 # ============================================================
 # FOOTER
