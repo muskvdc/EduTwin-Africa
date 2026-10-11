@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 
+
 class ConversationManager:
     """Keeps a bounded multi-turn message history."""
 
@@ -10,6 +11,18 @@ class ConversationManager:
 
     def clear(self) -> None:
         self.messages.clear()
+
+    def restore(self, messages: list[dict[str, str]]) -> None:
+        """Restore a saved conversation into the bounded message history."""
+        self.messages = [
+            {
+                "role": message["role"],
+                "content": message["content"],
+            }
+            for message in messages
+            if message.get("role") in ("user", "assistant")
+        ]
+        self._trim()
 
     def add_user(self, content: str) -> None:
         self.messages.append({"role": "user", "content": content})
@@ -26,3 +39,4 @@ class ConversationManager:
 
     def as_messages(self) -> list[dict[str, str]]:
         return list(self.messages)
+

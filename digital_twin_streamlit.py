@@ -23,6 +23,14 @@ from auth import (
     create_learner_profile,
     get_current_user,
     get_learner_profile,
+    get_learning_messages,
+    get_learning_sessions,
+    create_learning_session,
+    save_learning_message,
+    get_learning_context,
+    save_learning_context,
+    save_mastery_event,
+    get_recent_mastery_events,
     sign_in,
     sign_out,
     sign_up,
@@ -1231,8 +1239,6 @@ def apply_app_theme() -> None:
         unsafe_allow_html=True,
     )
 
-
-
 def init_state() -> None:
     defaults = {
         "session_id": uuid.uuid4().hex,
@@ -1257,7 +1263,9 @@ def init_state() -> None:
         "pipeline": None,
         "learning_state": LearningState().to_dict(),
         "learning_context_key": "",
+        "db_session_created": False,
     }
+
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
@@ -1276,8 +1284,19 @@ def init_state() -> None:
             "feedback_enabled": False,
         }]
 
-
-
+    if current_user is not None and not st.session_state.db_session_created:
+        try:
+            create_learning_session(
+                current_user.id,
+                st.session_state.session_id,
+                st.session_state.grade,
+                st.session_state.subject,
+                st.session_state.topic,
+            )
+            st.session_state.db_session_created = True
+        except Exception as exc:
+            st.error(f"Could not create the learning session: {exc}")
+            st.stop()
 
 
 init_state()
@@ -1317,14 +1336,49 @@ def current_context_key() -> str:
     )
 
 
-def sync_learning_state_context() -> None:
+def sync_learning_state_context(force_reload: bool = False) -> None:
+    """Load saved progress when the learner changes learning context."""
     key = current_context_key()
-    state = LearningState.from_dict(st.session_state.learning_state)
-    if state.context_key != key:
-        state.reset_for_context(key)
-        st.session_state.learning_state = state.to_dict()
-        st.session_state.learning_context_key = key
 
+    if (
+        st.session_state.learning_context_key == key
+        and not force_reload
+    ):
+        return
+
+    grade = st.session_state.grade
+    subject = st.session_state.subject
+    topic = st.session_state.topic
+
+    # Only load persisted progress when a complete learning context exists.
+    saved = None
+    if current_user is not None and subject and topic:
+        saved = get_learning_context(
+            current_user.id,
+            grade,
+            subject,
+            topic,
+        )
+
+    if saved:
+        state = LearningState.from_dict({
+            "context_key": key,
+            "mastered_concepts": saved.get("mastered_concepts", []),
+            "needs_practice": saved.get("needs_practice", []),
+            "recent_mistakes": saved.get("recent_mistakes", []),
+            "difficulty": saved.get("difficulty", 1),
+            "mastery_streak": saved.get("mastery_streak", 0),
+            "last_result": saved.get("last_result", "not_applicable"),
+            "current_concept": saved.get("current_concept", ""),
+            "lesson_started": saved.get("lesson_started", False),
+            "pending_check": saved.get("pending_check", False),
+        })
+    else:
+        state = LearningState()
+        state.reset_for_context(key)
+
+    st.session_state.learning_state = state.to_dict()
+    st.session_state.learning_context_key = key
 
 sync_learning_state_context()
 
@@ -1396,7 +1450,24 @@ def save_current_session() -> None:
 
 def start_new_session() -> None:
     save_current_session()
-    st.session_state.session_id = uuid.uuid4().hex
+
+    new_session_id = uuid.uuid4().hex
+
+    try:
+        create_learning_session(
+            current_user.id,
+            new_session_id,
+            st.session_state.grade,
+            st.session_state.subject,
+            st.session_state.topic,
+        )
+    except Exception as exc:
+        st.error(f"Could not create the learning session in Supabase: {exc}")
+        return
+
+    st.session_state.session_id = new_session_id
+    st.session_state.db_session_created = True
+
     st.session_state.messages = [{
         "id": uuid.uuid4().hex,
         "role": "assistant",
@@ -1414,13 +1485,12 @@ def start_new_session() -> None:
     st.session_state.total_latency = 0.0
     st.session_state.blocked_requests = 0
     st.session_state.pending_user_input = None
-    state = LearningState.from_dict(st.session_state.learning_state)
-    state.reset_for_context(current_context_key())
-    st.session_state.learning_state = state.to_dict()
+
+    sync_learning_state_context(force_reload=True)
+
     if st.session_state.pipeline is not None:
         st.session_state.pipeline.conversation.clear()
         st.session_state.pipeline.memory.data.clear()
-
 
 def process_user_input(user_input: str) -> None:
     """Process one submitted learner message and persist the result.
@@ -1440,6 +1510,15 @@ def process_user_input(user_input: str) -> None:
     }
     st.session_state.messages.append(user_message)
     st.session_state.question_count += 1
+
+    try:
+        save_learning_message(
+            current_user.id,
+            st.session_state.session_id,
+            user_message,
+        )
+    except Exception as exc:
+        st.error(f"Could not save your message: {exc}")
 
     sources = current_sources()
     request_text = f"""
@@ -1484,13 +1563,44 @@ Learner question:
             "activity", ["Preparing your explanation"]
         )
 
+        
         state = LearningState.from_dict(st.session_state.learning_state)
+        previously_mastered = set(state.mastered_concepts)
         state.apply_update(
             pipeline.last_tutor_state_update,
             current_context_key(),
         )
         state.lesson_started = True
         st.session_state.learning_state = state.to_dict()
+        newly_mastered = (
+            set(state.mastered_concepts) - previously_mastered
+        )
+        
+        for concept in newly_mastered:
+            try:
+                save_mastery_event(
+                    current_user.id,
+                    st.session_state.grade,
+                    st.session_state.subject,
+                    st.session_state.topic,
+                    concept,
+                )
+            except Exception as exc:
+                st.error(f"Could not save mastery event: {exc}")
+
+
+        # Persist cumulative progress for the selected learning context.
+        if st.session_state.subject and st.session_state.topic:
+            try:
+                save_learning_context(
+                    current_user.id,
+                    st.session_state.grade,
+                    st.session_state.subject,
+                    st.session_state.topic,
+                    state.to_dict(),
+                )
+            except Exception as exc:
+                st.error(f"Could not save learning context: {exc}")
 
         latency = time.perf_counter() - start
         st.session_state.total_latency += latency
@@ -1498,76 +1608,107 @@ Learner question:
         st.session_state.tool_calls += int(security.get("tool_calls", 0))
 
         assistant_timestamp = datetime.now()
-        st.session_state.messages.append(
-            {
-                "id": uuid.uuid4().hex,
-                "role": "assistant",
-                "content": response,
-                "timestamp": assistant_timestamp,
-                "trace": trace,
-                "security": security,
-                "route": route,
-                "route_reason": route_reason,
-                "activity": route_activity,
-                "feedback_enabled": True,
-            }
-        )
+        assistant_message = {
+            "id": uuid.uuid4().hex,
+            "role": "assistant",
+            "content": response,
+            "timestamp": assistant_timestamp,
+            "trace": trace,
+            "security": security,
+            "route": route,
+            "route_reason": route_reason,
+            "activity": route_activity,
+            "feedback_enabled": True,
+        }
+        st.session_state.messages.append(assistant_message)
+
+        try:
+            save_learning_message(
+                current_user.id,
+                st.session_state.session_id,
+                assistant_message,
+            )
+        except Exception as exc:
+            st.error(f"Could not save EduTwin's response: {exc}")
 
     except SecurityBlocked as exc:
         st.session_state.blocked_requests += 1
-        st.session_state.messages.append(
-            {
-                "id": uuid.uuid4().hex,
-                "role": "assistant",
-                "content": (
-                    "🛡️ This request was blocked by EduTwin's security system.\n\n"
-                    + exc.decision.user_message
-                ),
-                "timestamp": datetime.now(),
-                "trace": [],
-                "security": {},
-                "feedback_enabled": False,
-            }
-        )
+        blocked_message = {
+            "id": uuid.uuid4().hex,
+            "role": "assistant",
+            "content": (
+                "🛡️ This request was blocked by EduTwin's security system.\n\n"
+                + exc.decision.user_message
+            ),
+            "timestamp": datetime.now(),
+            "trace": [],
+            "security": {},
+            "feedback_enabled": False,
+        }
+        st.session_state.messages.append(blocked_message)
+
+        try:
+            save_learning_message(
+                current_user.id,
+                st.session_state.session_id,
+                blocked_message,
+            )
+        except Exception as save_exc:
+            st.error(f"Could not save the security response: {save_exc}")
 
     except BudgetExceeded:
-        st.session_state.messages.append(
-            {
-                "id": uuid.uuid4().hex,
-                "role": "assistant",
-                "content": (
-                    "⚠️ This request exceeded EduTwin's configured resource "
-                    "budget. The request was stopped safely; your conversation "
-                    "is intact."
-                ),
-                "timestamp": datetime.now(),
-                "trace": [],
-                "security": {},
-                "feedback_enabled": False,
-            }
-        )
+        budget_message = {
+            "id": uuid.uuid4().hex,
+            "role": "assistant",
+            "content": (
+                "⚠️ This request exceeded EduTwin's configured resource "
+                "budget. The request was stopped safely; your conversation "
+                "is intact."
+            ),
+            "timestamp": datetime.now(),
+            "trace": [],
+            "security": {},
+            "feedback_enabled": False,
+        }
+        st.session_state.messages.append(budget_message)
+
+        try:
+            save_learning_message(
+                current_user.id,
+                st.session_state.session_id,
+                budget_message,
+            )
+        except Exception as save_exc:
+            st.error(f"Could not save the budget response: {save_exc}")
 
     except Exception as exc:
-        st.session_state.messages.append(
-            {
-                "id": uuid.uuid4().hex,
-                "role": "assistant",
-                "content": (
-                    "❌ EduTwin could not complete that request. "
-                    "Your conversation has not been lost."
-                ),
-                "timestamp": datetime.now(),
-                "trace": [
-                    {
-                        "status": "error",
-                        "summary": f"{type(exc).__name__}: {exc}",
-                    }
-                ],
-                "security": {},
-                "feedback_enabled": False,
-            }
-        )
+        error_message = {
+            "id": uuid.uuid4().hex,
+            "role": "assistant",
+            "content": (
+                "❌ EduTwin could not complete that request. "
+                "Your conversation has not been lost."
+            ),
+            "timestamp": datetime.now(),
+            "trace": [
+                {
+                    "status": "error",
+                    "summary": f"{type(exc).__name__}: {exc}",
+                }
+            ],
+            "security": {},
+            "feedback_enabled": False,
+        }
+        st.session_state.messages.append(error_message)
 
+        try:
+            save_learning_message(
+                current_user.id,
+                st.session_state.session_id,
+                error_message,
+            )
+        except Exception as save_exc:
+            st.error(f"Could not save the error response: {save_exc}")
 
 # ============================================================
 # SIDEBAR
@@ -1838,27 +1979,92 @@ with chat_tab:
 
 with history_tab:
     st.subheader("📚 Learning History")
-    st.caption("Completed sessions are saved here when you start a new session.")
+    st.caption("Your saved learning sessions are linked to your account.")
 
-    if not st.session_state.saved_sessions:
-        st.info(
-            "No completed learning sessions yet. Use 'New / Clear Session' "
-            "in the sidebar after a learning session."
-        )
-    else:
-        for session in st.session_state.saved_sessions:
-            label = (
-                f"{session['grade']} · {session['subject'] or 'No subject'} · "
-                f"{session['topic'] or 'No topic'}"
+    try:
+        saved_sessions = get_learning_sessions(current_user.id)
+        sessions_with_messages = []
+
+        for session in saved_sessions:
+            messages = get_learning_messages(
+                current_user.id,
+                session["id"],
             )
-            with st.expander(f"{label} — {session['title']}"):
-                timestamp = session["timestamp"].strftime("%Y-%m-%d %H:%M")
-                st.caption(timestamp)
-                for message in session["messages"]:
-                    role = "Learner" if message["role"] == "user" else "EduTwin"
-                    st.markdown(f"**{role}**")
-                    st.markdown(render_tutor_content(message["content"]))
-                    st.divider()
+
+            if messages:
+                sessions_with_messages.append((session, messages))
+
+        if not sessions_with_messages:
+            st.info(
+                "No learning conversations yet. Your sessions will appear "
+                "here after you start chatting with EduTwin."
+            )
+        else:
+            for session, messages in sessions_with_messages:
+                session_id = session["id"]
+                label = (
+                    f"{session.get('grade') or 'No grade'} · "
+                    f"{session.get('subject') or 'No subject'} · "
+                    f"{session.get('topic') or 'No topic'}"
+                )
+
+                started_at = session.get("started_at", "")
+                if started_at:
+                    label = f"{label} — {started_at[:16].replace('T', ' ')}"
+
+                with st.expander(label):
+                    for message in messages:
+                        role = (
+                            "Learner"
+                            if message["role"] == "user"
+                            else "EduTwin"
+                        )
+                        st.markdown(f"**{role}**")
+                        st.markdown(
+                            render_tutor_content(message["content"])
+                        )
+                        st.divider()
+
+                    if st.button(
+                        "Continue this conversation",
+                        key=f"continue_{session_id}",
+                        type="primary",
+                    ):
+                        st.session_state.session_id = session_id
+                        st.session_state.db_session_created = True
+                        st.session_state.grade = session.get("grade") or "Grade 8"
+                        st.session_state.subject = session.get("subject")
+                        st.session_state.topic = session.get("topic")
+
+                        restored_messages = []
+                        for message in messages:
+                            restored_messages.append({
+                                "id": message["id"],
+                                "role": message["role"],
+                                "content": message["content"],
+                                "timestamp": (
+                                    datetime.fromisoformat(
+                                    message["created_at"].replace("Z", "+00:00")
+                                    )
+                                    if message.get("created_at")
+                                    else datetime.now()
+                                ),
+                                "trace": [],
+                                "security": {},
+                                "feedback_enabled": message["role"] == "assistant",
+                            })
+
+                        st.session_state.messages = restored_messages
+
+                        st.session_state.pipeline = None
+                        pipeline = ensure_pipeline()
+                        pipeline.conversation.restore(restored_messages)
+
+                        st.session_state.active_tab = "Chat"
+                        st.rerun()
+
+    except Exception as exc:
+        st.error(f"Could not load your learning history: {exc}")
 
 
 # ============================================================
@@ -1867,7 +2073,8 @@ with history_tab:
 
 with progress_tab:
     st.subheader("📊 Learning Progress")
-
+    
+    # Current-session performance metrics
     average_latency = (
         st.session_state.total_latency / st.session_state.response_count
         if st.session_state.response_count else 0
@@ -1880,18 +2087,81 @@ with progress_tab:
         helpful / feedback_total if feedback_total else None
     )
 
+    # Load cumulative learning activity from Supabase
+    try:
+        all_sessions = get_learning_sessions(current_user.id)
+        total_questions = 0
+        sessions_with_messages = 0
+
+        for session in all_sessions:
+            messages = get_learning_messages(
+                current_user.id,
+                session["id"],
+            )
+
+            if messages:
+                sessions_with_messages += 1
+
+            total_questions += sum(
+                message["role"] == "user"
+                for message in messages
+            )
+
+        progress_data_loaded = True
+
+    except Exception as exc:
+        progress_data_loaded = False
+        st.error(f"Could not load learning progress: {exc}")
+
+    # Current adaptive learning state
+    learning_state = LearningState.from_dict(
+        st.session_state.learning_state
+    )
+    mastered_count = len(learning_state.mastered_concepts)
+    practice_count = len(set(learning_state.needs_practice))
+
     p1, p2, p3, p4 = st.columns(4)
+
     with p1:
-        st.metric("Questions asked", st.session_state.question_count)
+        st.metric(
+            "Questions explored",
+            total_questions if progress_data_loaded else "Unavailable",
+        )
+
     with p2:
-        st.metric("Tutor replies", st.session_state.response_count)
+        st.metric("Concepts mastered", mastered_count)
+
     with p3:
-        st.metric("Avg response time", f"{average_latency:.1f}s")
+        st.metric("Concepts to practise", practice_count)
+
     with p4:
         st.metric(
-            "Satisfaction",
-            f"{satisfaction:.0%}" if satisfaction is not None else "—",
+            "Learning sessions",
+            sessions_with_messages if progress_data_loaded else "Unavailable",
         )
+    
+    st.subheader("🌟 Recently mastered")
+
+    try:
+        recent_events = get_recent_mastery_events(current_user.id)
+
+        if recent_events:
+            for event in recent_events:
+                st.markdown(
+                    f"**{event['concept']}** — "
+                    f"{event['subject']} · {event['topic']}"
+                )
+                if event.get("mastered_at"):
+                    st.caption(
+                        f"Recorded: {event['mastered_at'][:10]}"
+                    )
+        else:
+            st.info(
+                "Newly mastered concepts will appear here as you progress."
+            )
+
+    except Exception as exc:
+        st.error(f"Could not load recent mastery events: {exc}")
 
     st.divider()
 
