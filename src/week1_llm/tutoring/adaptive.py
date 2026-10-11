@@ -135,26 +135,42 @@ give a very short, beginner-friendly introduction to the first concept,
 then ask exactly one quick diagnostic/check question. Do not give a long
 textbook-style lesson before checking the learner.
 """.strip()
+    
     elif state.pending_check:
         phase = """
-The learner's latest message is being treated as an answer to your most
-recent check question. Evaluate that answer before changing the subject of
-the check.
+A check question is pending from the previous tutor response, but do not
+assume the learner's latest message answers it.
 
-If correct: explicitly say that the learner is correct, briefly explain why,
-acknowledge the success, increase the mastery streak, and only then give the
-next small concept or a slightly harder check. Do not silently replace a
-correct answer with a different question.
+FIRST, classify the learner's latest message by its meaning:
+- If it is a greeting, casual question, joke, personal comment, expression
+  of emotion, or other small talk, respond naturally to that message.
+  Do not evaluate it as an answer, give correctness feedback, or change
+  mastery state. Keep the pending check available for when the learner
+  returns to learning.
+- If the learner explicitly asks to pause, take a break, or chat instead,
+  respect that choice. Do not pressure the learner to answer the check.
+- Only evaluate the pending check when the learner's message is reasonably
+  understood as an attempt to answer that specific check question.
+- If the message is ambiguous, ask a brief clarifying question instead of
+  marking the answer correct or incorrect.
 
-If partially correct or unclear: give a useful hint and ask the learner to
-retry without immediately giving the full answer.
+When the learner does answer the check:
 
-If incorrect: give a hint and ask for another attempt. If the learner still
-struggles, step back to the simplest prerequisite concept, reteach it briefly,
-then ask a simpler check.
+If correct: explicitly say that the learner is correct, briefly explain
+why, acknowledge the success, increase the mastery streak, and only then
+give the next small concept or a slightly harder check. Do not silently
+replace a correct answer with a different question.
+
+If partially correct or unclear: give a useful hint and ask the learner
+to retry without immediately giving the full answer.
+
+If incorrect: give a hint and ask for another attempt. If the learner
+still struggles, step back to the simplest prerequisite concept, reteach
+it briefly, then ask a simpler check.
 
 Do not punish mistakes. Treat them as evidence about what to teach next.
 """.strip()
+
     else:
         phase = """
 Teach the next small concept needed for the current topic. Keep the lesson

@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import time
 import uuid
+import re
 from datetime import datetime
 from pathlib import Path
-
 import streamlit as st
 
 from week1_llm.conversation.manager import ConversationManager
@@ -1264,25 +1264,17 @@ def init_state() -> None:
         "learning_state": LearningState().to_dict(),
         "learning_context_key": "",
         "db_session_created": False,
+        "pending_history_context": None,
     }
 
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
+    
     if not st.session_state.messages:
-        st.session_state.messages = [{
-            "id": uuid.uuid4().hex,
-            "role": "assistant",
-            "content": (
-                "Hello! I'm EduTwin Africa. Choose your grade, subject, and "
-                "topic, then ask me what you'd like to learn."
-            ),
-            "timestamp": datetime.now(),
-            "trace": [],
-            "security": {},
-            "feedback_enabled": False,
-        }]
+        st.session_state.messages = []
+
 
     if current_user is not None and not st.session_state.db_session_created:
         try:
@@ -1448,6 +1440,49 @@ def save_current_session() -> None:
     st.session_state.saved_sessions = st.session_state.saved_sessions[:20]
 
 
+def generate_and_save_opening_greeting() -> None:
+    """Generate and persist a greeting for the current conversation."""
+
+    pipeline = ensure_pipeline()
+
+    try:
+        greeting = pipeline.generate_opening_greeting(
+            language=st.session_state.language,
+            grade=st.session_state.grade,
+            subject=st.session_state.subject,
+            topic=st.session_state.topic,
+            temperature=st.session_state.temperature,
+            actor_id=st.session_state.session_id,
+        )
+        if not isinstance(greeting, str) or not greeting.strip():
+            st.error(
+                "The greeting generator returned empty text. "
+                "Check the model response and security output filter."
+            )
+            return
+
+        assistant_message = {
+            "id": uuid.uuid4().hex,
+            "role": "assistant",
+            "content": greeting,
+            "timestamp": datetime.now(),
+            "trace": [],
+            "security": dict(pipeline.last_security),
+            "feedback_enabled": False,
+        }
+
+        st.session_state.messages.append(assistant_message)
+
+        save_learning_message(
+            current_user.id,
+            st.session_state.session_id,
+            assistant_message,
+        )
+
+    except Exception as exc:
+        st.error(f"Could not generate the opening greeting: {exc}")
+
+
 def start_new_session() -> None:
     save_current_session()
 
@@ -1468,16 +1503,7 @@ def start_new_session() -> None:
     st.session_state.session_id = new_session_id
     st.session_state.db_session_created = True
 
-    st.session_state.messages = [{
-        "id": uuid.uuid4().hex,
-        "role": "assistant",
-        "content": (
-            "New learning session started. What would you like to learn?"
-        ),
-        "timestamp": datetime.now(),
-        "trace": [],
-        "security": {},
-    }]
+    st.session_state.messages = []
     st.session_state.feedback = {}
     st.session_state.question_count = 0
     st.session_state.response_count = 0
@@ -1485,6 +1511,8 @@ def start_new_session() -> None:
     st.session_state.total_latency = 0.0
     st.session_state.blocked_requests = 0
     st.session_state.pending_user_input = None
+
+    generate_and_save_opening_greeting()
 
     sync_learning_state_context(force_reload=True)
 
@@ -1509,7 +1537,50 @@ def process_user_input(user_input: str) -> None:
         "timestamp": user_timestamp,
     }
     st.session_state.messages.append(user_message)
-    st.session_state.question_count += 1
+    
+    # Count questions and question-like requests independently of routing.
+    text = user_input.strip().casefold()
+
+    question_patterns = (
+        r"\bwhat\b",
+        r"\bwhy\b",
+        r"\bwhen\b",
+        r"\bwhere\b",
+        r"\bwho\b",
+        r"\bwhom\b",
+        r"\bwhose\b",
+        r"\bwhich\b",
+        r"\bhow\b",
+        r"\bcan you\b",
+        r"\bcould you\b",
+        r"\bwould you\b",
+        r"\bwill you\b",
+        r"\bdo you\b",
+        r"\bdid you\b",
+        r"\bis there\b",
+        r"\bare there\b",
+        r"\bexplain\b",
+        r"\bteach me\b",
+        r"\btell me\b",
+        r"\bshow me\b",
+        r"\bhelp me\b",
+        r"\bdescribe\b",
+        r"\bdefine\b",
+        r"\bcalculate\b",
+        r"\bconvert\b",
+        r"\bcompare\b",
+        r"\bfind out\b",
+        r"\bi want to know\b",
+        r"\bi need to know\b",
+    )
+
+    is_question = (
+        "?" in text
+        or any(re.search(pattern, text) for pattern in question_patterns)
+    )
+
+    if is_question:
+        st.session_state.question_count += 1
 
     try:
         save_learning_message(
@@ -1538,8 +1609,65 @@ Learner question:
         subject=st.session_state.subject or "",
         topic=st.session_state.topic or "",
     )
+    
+    conversation_instruction = f"""
+CONVERSATIONAL AWARENESS — EDU TWIN AFRICA
+
+The learner is a person, not just a sequence of lessons. Distinguish
+casual conversation from a learning question or an answer to a check.
+
+1. RECOGNISE SMALL TALK
+Greetings, jokes, casual questions, comments about the learner's day,
+and expressions such as "I'm tired" or "I'm bored" are not automatically
+requests to begin or continue a lesson.
+
+2. SMALL TALK AT THE START
+If the learner starts with small talk, respond naturally and warmly in
+the preferred response language: {st.session_state.language}.
+Do not launch into a lesson, introduce a new concept, or ask a diagnostic
+question just because the learner has opened the chat.
+Let the learner decide when they are ready to learn.
+
+3. SMALL TALK DURING A LESSON
+If the learner changes to casual conversation during a lesson, engage
+with what they actually said. Do not force the next teaching step.
+Do not interpret casual conversation as an answer to a pending check
+question, and do not mark it correct or incorrect.
+
+If learning was already underway, you may gently finish your casual
+response by asking whether the learner is ready to continue with the
+current topic: {st.session_state.topic or "the selected learning topic"}.
+Use natural wording and do not pressure the learner to continue.
+
+4. RESUME LEARNING
+If the learner agrees to continue, return to the existing grade, subject,
+and topic. Briefly reconnect them with where they left off, then continue
+with an appropriate teaching step or check question.
+If they want to keep chatting or take a break, respect that choice.
+
+5. PROTECT LEARNING STATE
+During small talk, do not invent mastered concepts, remove concepts from
+the mastered list, add practice needs without evidence, change difficulty
+without a learning reason, or switch the selected learning context.
+Preserve the existing learning progress.
+If small talk interrupts a pending check, do not evaluate it as an answer.
+When learning resumes, re-establish the check if needed.
+
+6. LANGUAGE
+Use the learner's preferred response language for small talk and learning
+transitions unless the learner explicitly requests another language.
+
+7. RESPONSE STYLE
+Be age-appropriate, friendly, concise, and natural. Do not explain these
+rules to the learner or mention internal learning-state metadata.
+""".strip()
+
     combined_instruction = (
-        EDUTWIN_SYSTEM_INSTRUCTION + "\n\n" + adaptive_instruction
+        EDUTWIN_SYSTEM_INSTRUCTION
+        + "\n\n"
+        + adaptive_instruction
+        + "\n\n"
+        + conversation_instruction
     )
 
     start = time.perf_counter()
@@ -1563,7 +1691,6 @@ Learner question:
             "activity", ["Preparing your explanation"]
         )
 
-        
         state = LearningState.from_dict(st.session_state.learning_state)
         previously_mastered = set(state.mastered_concepts)
         state.apply_update(
@@ -1682,6 +1809,8 @@ Learner question:
             st.error(f"Could not save the budget response: {save_exc}")
 
     except Exception as exc:
+        st.exception(exc)
+
         error_message = {
             "id": uuid.uuid4().hex,
             "role": "assistant",
@@ -1714,9 +1843,48 @@ Learner question:
 # SIDEBAR
 # ============================================================
 
+# Apply a restored History context before sidebar widgets are created.
+pending_context = st.session_state.get("pending_history_context")
+
+if pending_context:
+    st.session_state.grade = pending_context["grade"]
+    st.session_state.subject = pending_context["subject"]
+    st.session_state.topic = pending_context["topic"]
+
+    st.session_state.grade_selector = st.session_state.grade
+    st.session_state.subject_selector = st.session_state.subject
+    st.session_state.topic_selector = st.session_state.topic
+
+    st.session_state.pending_history_context = None
+    sync_learning_state_context(force_reload=True)
+
+if "sidebar_language_selector" not in st.session_state:
+    st.session_state.sidebar_language_selector = st.session_state.language
+
 with st.sidebar:
     st.title("🎓 EduTwin Africa")
     st.caption("AI-powered educational tutor")
+    
+    def save_sidebar_language():
+        new_language = st.session_state.sidebar_language_selector
+
+        if new_language != st.session_state.language:
+            try:
+                update_learner_profile(
+                    current_user.id,
+                    {"preferred_language": new_language},
+                )
+                st.session_state.language = new_language
+            except Exception as exc:
+                st.error(f"Could not save your language preference: {exc}")
+
+    st.selectbox(
+        "🌐 Response Language",
+        ["English", "isiXhosa", "isiZulu", "Swahili"],
+        key="sidebar_language_selector",
+        on_change=save_sidebar_language,
+        help="Choose the language EduTwin should use for responses.",
+    )
 
     st.subheader("👤 Learner Profile")
 
@@ -2032,10 +2200,12 @@ with history_tab:
                     ):
                         st.session_state.session_id = session_id
                         st.session_state.db_session_created = True
-                        st.session_state.grade = session.get("grade") or "Grade 8"
-                        st.session_state.subject = session.get("subject")
-                        st.session_state.topic = session.get("topic")
-
+                        st.session_state.pending_history_context = {
+                            "grade": session.get("grade") or "Grade 8",
+                            "subject": session.get("subject"),
+                            "topic": session.get("topic"),
+                        }
+                        
                         restored_messages = []
                         for message in messages:
                             restored_messages.append({
@@ -2219,27 +2389,6 @@ with progress_tab:
 
 with settings_tab:
     st.subheader("⚙️ EduTwin Settings")
-
-    def save_language_preference():
-        new_language = st.session_state.language_selector
-
-        if new_language != st.session_state.language:
-            try:
-                update_learner_profile(
-                    current_user.id,
-                    {"preferred_language": new_language},
-                )
-                st.session_state.language = new_language
-            except Exception as exc:
-                st.error(f"Could not save your language preference: {exc}")
-
-    st.selectbox(
-        "Response Language",
-        ["English", "isiXhosa", "isiZulu", "Swahili"],
-        key="language_selector",
-        help="EduTwin will save your language preference automatically.",
-        on_change=save_language_preference,
-    )
 
     st.session_state.temperature = st.slider(
         "Creativity",

@@ -187,6 +187,92 @@ class AssistantPipeline:
         self.conversation.add_user(user_input)
         self.conversation.add_assistant(clean_answer)
         return clean_answer
+    
+    
+    def generate_opening_greeting(
+        self,
+        *,
+        language: str,
+        grade: str,
+        subject: str | None = None,
+        topic: str | None = None,
+        temperature: float = 0.7,
+        actor_id: str = "local",
+    ) -> str:
+        """Generate a greeting without adding a learner turn."""
+
+        greeting_instruction = f"""
+You are EduTwin Africa, a friendly AI learning companion.
+
+Write a short, natural, welcoming opening greeting.
+Preferred response language: {language}
+Learner grade: {grade}
+Selected subject: {subject or "not selected"}
+Selected topic: {topic or "not selected"}
+
+Requirements:
+- Write entirely in the preferred response language.
+- Use one or two short, friendly sentences.
+- Welcome the learner naturally.
+- Invite them to chat or ask for help.
+- Do not start a lesson or ask a quiz question.
+- Return only the greeting.
+""".strip()
+
+        request_id = self.security.new_request_id()
+        self.security.check_input(
+            "Generate a short opening greeting.",
+            request_id,
+            actor_id,
+        )
+
+        budget = self.security.new_budget(multi_agent=False)
+        guarded_client = self.security.guarded_client(self.client, budget)
+
+        messages = [
+            {"role": "system", "content": greeting_instruction},
+            {
+                "role": "user",
+                "content": (
+                    f"Write a welcoming greeting in {language}. "
+                    "Return only the greeting."
+                ),
+            },
+        ],
+
+        answer = guarded_client.chat(
+            messages,
+            temperature=temperature,
+            max_completion_tokens=160,
+        )
+
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError(
+                f"Greeting model returned empty content "
+                f"(type={type(answer).__name__})."
+            )
+
+        safe_answer = self.security.check_output(
+            answer,
+            protected_prompt=self._protected_prompt(greeting_instruction),
+            request_id=request_id,
+            actor_id=actor_id,
+        )
+
+        if not isinstance(safe_answer, str) or not safe_answer.strip():
+            raise ValueError(
+                "Greeting content was empty after security checking."
+            )
+
+        self.last_tutor_state_update = None
+        self.last_tool_trace = []
+        self.last_security = {
+            "model_calls": budget.model_calls,
+            "tool_calls": budget.tool_calls,
+            "estimated_tokens": budget.estimated_tokens,
+        }
+
+        return safe_answer.strip()
 
     def multi_agent_chat(
         self,
@@ -287,57 +373,50 @@ class AssistantPipeline:
             "reason": decision.reason,
             "activity": list(decision.activity),
         }
+        
+        if decision.reason in {
+            "casual_greeting",
+            "adaptive_check_greeting",
+            "active_adaptive_control",
+        }:
+            # Let the model respond naturally in the learner's preferred
+            # language instead of returning a hardcoded English response.
+            greeting_instruction = """
+Respond naturally to the learner's latest message in the preferred
+response language specified in the conversation context.
 
-        if decision.reason == "casual_greeting":
-            answer = (
-                "Hi! 👋 What would you like to learn? "
-                "Ask me to teach a concept, explain an example, or quiz you."
+If the learner greets you, give a brief, warm, welcoming reply.
+If the learner makes small talk, respond to what they actually said.
+If a learning check is pending, do not treat small talk as an answer,
+and do not mark it correct or incorrect.
+Do not force the learner to begin or resume a lesson.
+Keep the response concise, friendly, age-appropriate, and natural.
+Do not claim the learner has mastered anything or change learning state.
+""".strip()
+
+            answer = self.chat(
+                user_input,
+                temperature=temperature,
+                request_id=request_id,
+                actor_id=actor_id,
+                source_filter=source_filter,
+                extra_system_instruction=(
+                    (extra_system_instruction or "")
+                    + "\n\n"
+                    + greeting_instruction
+                ),
             )
+
+            # Preserve the existing adaptive state for these conversational
+            # responses rather than applying a learning-state update.
             self.last_tutor_state_update = None
-            self.last_tool_trace = []
-            self.last_security = {
-                "model_calls": 0,
-                "tool_calls": 0,
-                "estimated_tokens": 0,
-            }
             result = {
                 "answer": answer,
-                "trace": [],
-                "tool_trace": [],
+                "trace": list(self.last_tool_trace),
+                "tool_trace": list(self.last_tool_trace),
                 "security": dict(self.last_security),
             }
-        elif decision.reason == "adaptive_check_greeting":
-            answer = (
-                "Hi! 👋 No problem — we're still on the quick check. "
-                "When you're ready, answer the question above."
-            )
-            self.last_tutor_state_update = None
-            self.last_tool_trace = []
-            self.last_security = {
-                "model_calls": 0,
-                "tool_calls": 0,
-                "estimated_tokens": 0,
-            }
-            result = {
-                "answer": answer,
-                "trace": [],
-                "tool_trace": [],
-                "security": dict(self.last_security),
-            }
-        elif decision.reason == "active_adaptive_control":
-            # Deterministic control response: preserve the pending check without
-            # consuming a model/tool call or changing adaptive state.
-            answer = (
-                "We’re still on the current quick check. "
-                "Please answer the question above first, and I’ll use your answer "
-                "to decide what we should learn next."
-            )
-            result = {
-                "answer": answer,
-                "trace": [],
-                "tool_trace": [],
-                "security": {},
-            }
+
         elif decision.is_multi_agent:
             result = self.multi_agent_chat(
                 user_input,
