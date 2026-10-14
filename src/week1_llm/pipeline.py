@@ -238,7 +238,7 @@ Requirements:
                     "Return only the greeting."
                 ),
             },
-        ],
+        ]
 
         answer = guarded_client.chat(
             messages,

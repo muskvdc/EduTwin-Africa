@@ -124,6 +124,40 @@ def create_learning_session(user_id, session_id, grade, subject, topic):
     return result.data
 
 
+def update_learning_session_context(
+    user_id,
+    session_id,
+    grade,
+    subject,
+    topic,
+):
+    """Persist the selected curriculum context on an owned session."""
+    supabase = get_supabase()
+
+    result = (
+        supabase
+        .table("learning_sessions")
+        .update({
+            "grade": grade,
+            "subject": subject,
+            "topic": topic,
+        })
+        .eq("id", session_id)
+        .eq("user_id", user_id)
+        .select("id")
+        .execute()
+    )
+
+    if not result.data:
+        raise RuntimeError(
+            "The learning session context was not updated. "
+            "The session may not exist, may belong to another user, "
+            "or the authenticated user may not have update permission."
+        )
+
+    return result.data
+
+
 def save_learning_message(user_id, session_id, message):
     """Save a conversation message with its original timestamp."""
     supabase = get_supabase()
@@ -165,6 +199,29 @@ def get_learning_sessions(user_id):
     )
 
     return result.data or []
+
+
+def delete_learning_session(user_id, session_id):
+    """Delete one learning session belonging to the specified learner."""
+    supabase = get_supabase()
+
+    result = (
+        supabase
+        .table("learning_sessions")
+        .delete()
+        .eq("id", session_id)
+        .eq("user_id", user_id)
+        .select("id")
+        .execute()
+    )
+
+    if not result.data:
+        raise RuntimeError(
+            "The session could not be deleted. "
+            "It may not exist or may not belong to this learner."
+        )
+
+    return result.data
 
 
 def get_learning_messages(user_id, session_id):

@@ -23,9 +23,11 @@ from auth import (
     create_learner_profile,
     get_current_user,
     get_learner_profile,
-    get_learning_messages,
     get_learning_sessions,
+    get_learning_messages,
+    delete_learning_session,
     create_learning_session,
+    update_learning_session_context,
     save_learning_message,
     get_learning_context,
     save_learning_context,
@@ -300,6 +302,56 @@ st.markdown(
         border-radius: 0.65rem;
         min-height: 2.5rem;
     }
+
+    
+    /* ============================================================
+    SHARED SIDEBAR SPACING — ALL THEMES
+    ============================================================ */
+
+    /* Reduce the blank space above the first sidebar element */
+    section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+        padding-top: 0.35rem !important;
+    }
+
+    /* Reduce the sidebar's top content padding */
+    section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+        padding-top: 0 !important;
+    }
+
+    /* Compact the sidebar's overall vertical layout */
+    section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+        gap: 0.55rem !important;
+    }
+
+    /* Tighten section heading spacing */
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3 {
+        margin-top: 0.25rem !important;
+        margin-bottom: 0.2rem !important;
+    }
+
+    /* Reduce empty space around horizontal dividers */
+    section[data-testid="stSidebar"] hr {
+        margin-top: 0.45rem !important;
+        margin-bottom: 0.45rem !important;
+    }
+
+    /* Reduce space beneath sidebar widget labels */
+    section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] {
+        margin-bottom: 0.1rem !important;
+    }
+
+    /* Consistent compact dropdown height */
+    section[data-testid="stSidebar"] [data-baseweb="select"] > div {
+        min-height: 2.35rem !important;
+    }
+
+    /* Keep sidebar buttons compact */
+    section[data-testid="stSidebar"] .stButton {
+        margin-bottom: 0 !important;
+    }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -1318,6 +1370,29 @@ def sync_curriculum_selection() -> None:
 sync_curriculum_selection()
 
 
+
+def persist_current_session_context() -> None:
+    """Persist the current session's selected learning context."""
+    if current_user is None:
+        return
+
+    if not st.session_state.get("db_session_created"):
+        return
+
+    try:
+        update_learning_session_context(
+            user_id=current_user.id,
+            session_id=st.session_state.session_id,
+            grade=st.session_state.grade,
+            subject=st.session_state.subject,
+            topic=st.session_state.topic,
+        )
+    except Exception as exc:
+        st.error(
+            f"Could not save the learning context: {exc}"
+        )
+
+
 def current_context_key() -> str:
     return "|".join(
         [
@@ -1440,10 +1515,28 @@ def save_current_session() -> None:
     st.session_state.saved_sessions = st.session_state.saved_sessions[:20]
 
 
+
 def generate_and_save_opening_greeting() -> None:
-    """Generate and persist a greeting for the current conversation."""
+    """Generate or refresh the greeting for the current learning context."""
 
     pipeline = ensure_pipeline()
+
+    # Never regenerate a greeting after the learner has started chatting.
+    if any(
+        message.get("role") == "user"
+        for message in st.session_state.messages
+    ):
+        return
+
+    # Reuse the existing greeting's ID if one is already present.
+    existing_greeting = next(
+        (
+            message
+            for message in st.session_state.messages
+            if message.get("role") == "assistant"
+        ),
+        None,
+    )
 
     try:
         greeting = pipeline.generate_opening_greeting(
@@ -1454,6 +1547,7 @@ def generate_and_save_opening_greeting() -> None:
             temperature=st.session_state.temperature,
             actor_id=st.session_state.session_id,
         )
+
         if not isinstance(greeting, str) or not greeting.strip():
             st.error(
                 "The greeting generator returned empty text. "
@@ -1461,17 +1555,22 @@ def generate_and_save_opening_greeting() -> None:
             )
             return
 
-        assistant_message = {
-            "id": uuid.uuid4().hex,
-            "role": "assistant",
-            "content": greeting,
-            "timestamp": datetime.now(),
-            "trace": [],
-            "security": dict(pipeline.last_security),
-            "feedback_enabled": False,
-        }
-
-        st.session_state.messages.append(assistant_message)
+        if existing_greeting:
+            # Update the greeting instead of appending another message.
+            existing_greeting["content"] = greeting
+            existing_greeting["timestamp"] = datetime.now()
+            assistant_message = existing_greeting
+        else:
+            assistant_message = {
+                "id": uuid.uuid4().hex,
+                "role": "assistant",
+                "content": greeting,
+                "timestamp": datetime.now(),
+                "trace": [],
+                "security": dict(pipeline.last_security),
+                "feedback_enabled": False,
+            }
+            st.session_state.messages.append(assistant_message)
 
         save_learning_message(
             current_user.id,
@@ -1481,6 +1580,7 @@ def generate_and_save_opening_greeting() -> None:
 
     except Exception as exc:
         st.error(f"Could not generate the opening greeting: {exc}")
+
 
 
 def start_new_session() -> None:
@@ -1528,6 +1628,7 @@ def process_user_input(user_input: str) -> None:
     composer always remains below the complete conversation.
     """
     sync_profile_to_memory()
+    persist_current_session_context()
 
     user_timestamp = datetime.now()
     user_message = {
@@ -1919,11 +2020,21 @@ with st.sidebar:
         index=SUPPORTED_GRADES.index(st.session_state.grade),
         key="grade_selector",
     )
+    
     if grade != st.session_state.grade:
         st.session_state.grade = grade
         st.session_state.subject = None
         st.session_state.topic = None
+
         sync_curriculum_selection()
+        persist_current_session_context()
+
+        if not any(
+            message.get("role") == "user"
+            for message in st.session_state.messages
+        ):
+            generate_and_save_opening_greeting()
+
         st.rerun()
 
     subjects = catalog.subjects_for_grade(st.session_state.grade)
@@ -1938,7 +2049,16 @@ with st.sidebar:
         if subject != st.session_state.subject:
             st.session_state.subject = subject
             st.session_state.topic = None
+
             sync_curriculum_selection()
+            persist_current_session_context()
+
+            if not any(
+                message.get("role") == "user"
+                for message in st.session_state.messages
+            ):
+                generate_and_save_opening_greeting()
+
             st.rerun()
 
         topics = catalog.topics_for(st.session_state.grade, subject)
@@ -1953,7 +2073,16 @@ with st.sidebar:
             )
             if topic != st.session_state.topic:
                 st.session_state.topic = topic
+
                 sync_learning_state_context()
+                persist_current_session_context()
+
+                if not any(
+                    message.get("role") == "user"
+                    for message in st.session_state.messages
+                ):
+                    generate_and_save_opening_greeting()
+
                 st.rerun()
         else:
             st.warning("No curriculum topics are loaded for this subject yet.")
@@ -1969,22 +2098,6 @@ with st.sidebar:
         st.session_state.topic,
     ))
 
-    st.divider()
-
-    st.subheader("⚡ Quick Status")
-    status_col1, status_col2 = st.columns(2)
-    with status_col1:
-        st.metric("Questions", st.session_state.question_count)
-    with status_col2:
-        st.metric("Replies", st.session_state.response_count)
-
-    if st.session_state.blocked_requests:
-        st.caption(f"🛡️ Blocked requests: {st.session_state.blocked_requests}")
-
-    if st.button("🗑️ New / Clear Session", use_container_width=True):
-        st.session_state.confirm_clear = True
-        st.rerun()
-
     if st.session_state.confirm_clear:
         st.warning("This will save the current learning session to History and start a new one.")
         confirm_col1, confirm_col2 = st.columns(2)
@@ -1997,6 +2110,22 @@ with st.sidebar:
             if st.button("Cancel", use_container_width=True):
                 st.session_state.confirm_clear = False
                 st.rerun()
+
+    if st.button("🗑️ New / Clear Session", use_container_width=True):
+        st.session_state.confirm_clear = True
+        st.rerun()
+
+    st.divider()
+
+    st.subheader("⚡ Quick Status")
+    status_col1, status_col2 = st.columns(2)
+    with status_col1:
+        st.metric("Questions", st.session_state.question_count)
+    with status_col2:
+        st.metric("Replies", st.session_state.response_count)
+
+    if st.session_state.blocked_requests:
+        st.caption(f"🛡️ Blocked requests: {st.session_state.blocked_requests}")
 
 # ============================================================
 # MAIN HEADER
@@ -2056,24 +2185,21 @@ chat_tab, history_tab, progress_tab, settings_tab = st.tabs(
 # ============================================================
 
 with chat_tab:
-    top1, top2, top3, top4 = st.columns(4)
-    with top1:
-        st.metric("Questions", st.session_state.question_count)
-    with top2:
-        st.metric("Tutor replies", st.session_state.response_count)
-    with top3:
-        st.metric("Tool uses", st.session_state.tool_calls)
-    with top4:
-        feedback_total = len(st.session_state.feedback)
-        helpful = sum(value == "helpful" for value in st.session_state.feedback.values())
-        satisfaction = f"{(helpful / feedback_total):.0%}" if feedback_total else "—"
-        st.metric("Helpful", satisfaction)
-
     if not current_sources():
         st.warning(
             "This learning context is not available in the current knowledge base. "
             "Select a supported context before asking a curriculum question."
         )
+
+    # Generate a welcoming greeting when the learner first opens
+    # an empty session, without repeating it on every rerun.
+    if (
+        current_user is not None
+        and st.session_state.get("db_session_created")
+        and not st.session_state.messages
+    ):
+        with st.spinner("EduTwin is getting ready to help you learn..."):
+            generate_and_save_opening_greeting()
 
     # A submitted form is processed on the next Streamlit run, before the
     # conversation is rendered. This guarantees the composer remains after
@@ -2167,9 +2293,11 @@ with history_tab:
                 "No learning conversations yet. Your sessions will appear "
                 "here after you start chatting with EduTwin."
             )
+
         else:
             for session, messages in sessions_with_messages:
                 session_id = session["id"]
+
                 label = (
                     f"{session.get('grade') or 'No grade'} · "
                     f"{session.get('subject') or 'No subject'} · "
@@ -2178,60 +2306,132 @@ with history_tab:
 
                 started_at = session.get("started_at", "")
                 if started_at:
-                    label = f"{label} — {started_at[:16].replace('T', ' ')}"
+                    label = (
+                        f"{label} — "
+                        f"{started_at[:16].replace('T', ' ')}"
+                    )
 
-                with st.expander(label):
-                    for message in messages:
-                        role = (
-                            "Learner"
-                            if message["role"] == "user"
-                            else "EduTwin"
-                        )
-                        st.markdown(f"**{role}**")
-                        st.markdown(
-                            render_tutor_content(message["content"])
-                        )
-                        st.divider()
+                pending_delete = st.session_state.get(
+                    "pending_delete_session"
+                )
 
-                    if st.button(
-                        "Continue this conversation",
-                        key=f"continue_{session_id}",
-                        type="primary",
-                    ):
-                        st.session_state.session_id = session_id
-                        st.session_state.db_session_created = True
-                        st.session_state.pending_history_context = {
-                            "grade": session.get("grade") or "Grade 8",
-                            "subject": session.get("subject"),
-                            "topic": session.get("topic"),
-                        }
-                        
-                        restored_messages = []
+                expander_col, delete_col = st.columns(
+                    [0.92, 0.08],
+                    vertical_alignment="center",
+                )
+
+                with expander_col:
+                    with st.expander(label):
                         for message in messages:
-                            restored_messages.append({
-                                "id": message["id"],
-                                "role": message["role"],
-                                "content": message["content"],
-                                "timestamp": (
-                                    datetime.fromisoformat(
-                                    message["created_at"].replace("Z", "+00:00")
-                                    )
-                                    if message.get("created_at")
-                                    else datetime.now()
-                                ),
-                                "trace": [],
-                                "security": {},
-                                "feedback_enabled": message["role"] == "assistant",
-                            })
+                            role = (
+                                "Learner"
+                                if message["role"] == "user"
+                                else "EduTwin"
+                            )
+                            st.markdown(f"**{role}**")
+                            st.markdown(
+                                render_tutor_content(message["content"])
+                            )
+                            st.divider()
 
-                        st.session_state.messages = restored_messages
+                        if st.button(
+                            "Continue this conversation",
+                            key=f"continue_{session_id}",
+                            type="primary",
+                        ):
+                            st.session_state.session_id = session_id
+                            st.session_state.db_session_created = True
+                            st.session_state.pending_history_context = {
+                                "grade": session.get("grade") or "Grade 8",
+                                "subject": session.get("subject"),
+                                "topic": session.get("topic"),
+                            }
 
-                        st.session_state.pipeline = None
-                        pipeline = ensure_pipeline()
-                        pipeline.conversation.restore(restored_messages)
+                            restored_messages = []
 
-                        st.session_state.active_tab = "Chat"
+                            for message in messages:
+                                restored_messages.append({
+                                    "id": message["id"],
+                                    "role": message["role"],
+                                    "content": message["content"],
+                                    "timestamp": (
+                                        datetime.fromisoformat(
+                                            message["created_at"].replace(
+                                                "Z", "+00:00"
+                                            )
+                                        )
+                                        if message.get("created_at")
+                                        else datetime.now()
+                                    ),
+                                    "trace": [],
+                                    "security": {},
+                                    "feedback_enabled": (
+                                        message["role"] == "assistant"
+                                    ),
+                                })
+
+                            st.session_state.messages = restored_messages
+                            st.session_state.pipeline = None
+
+                            pipeline = ensure_pipeline()
+                            pipeline.conversation.restore(restored_messages)
+
+                            st.session_state.active_tab = "Chat"
+                            st.rerun()
+
+                with delete_col:
+                    if st.button(
+                        "🗑️",
+                        key=f"delete_{session_id}",
+                        help="Delete this conversation",
+                    ):
+                        st.session_state.pending_delete_session = session_id
                         st.rerun()
+
+                if pending_delete == session_id:
+                    st.warning(
+                        "Delete this conversation permanently? "
+                        "Its saved messages will also be deleted."
+                    )
+
+                    confirm_col, cancel_col = st.columns(2)
+
+                    with confirm_col:
+                        if st.button(
+                            "Delete",
+                            key=f"confirm_delete_{session_id}",
+                            type="primary",
+                        ):
+                            try:
+                                delete_learning_session(
+                                    current_user.id,
+                                    session_id,
+                                )
+
+                                if (
+                                    st.session_state.get("session_id")
+                                    == session_id
+                                ):
+                                    st.session_state.messages = []
+                                    st.session_state.db_session_created = False
+                                    st.session_state.pending_delete_session = None
+
+                                st.session_state.pending_delete_session = None
+                                st.success("Conversation deleted.")
+                                st.rerun()
+
+                            except Exception as exc:
+                                st.error(
+                                    f"Could not delete conversation: {exc}"
+                                )
+
+                    with cancel_col:
+                        if st.button(
+                            "Cancel",
+                            key=f"cancel_delete_{session_id}",
+                        ):
+                            st.session_state.pending_delete_session = None
+                            st.rerun()
 
     except Exception as exc:
         st.error(f"Could not load your learning history: {exc}")
